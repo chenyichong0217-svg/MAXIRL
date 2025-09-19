@@ -271,14 +271,20 @@ class MaxEntIRL:
         
         # 计算所有候选轨迹的概率和特征
         probabilities, features_list, rewards = self.compute_trajectory_probabilities(candidate_trajectories)
-        
-        # 计算特征期望 E[f(ζ)] = Σ P(ζi|θ) * f(ζi)
-        feature_expectation = np.zeros(self.feature_dim)
-        for i, features in enumerate(features_list):
-            feature_expectation += probabilities[i] * features
-        
+
+        # 选出概率最高的轨迹
+        best_idx = int(np.argmax(probabilities))
+        selected_features = features_list[best_idx]
+
+        # 计算期望特征用于梯度（符合最大熵 IRL）
+        features_matrix = np.vstack(features_list)
+        expected_features = probabilities @ features_matrix
+
         # 计算梯度 (包括正则化项)
-        gradient = expert_features - feature_expectation - 2 * self.lam * self.theta
+        gradient = expert_features - expected_features - 2 * self.lam * self.theta
+
+        # 真实梯度范数
+        gradient_norm = np.linalg.norm(gradient)
         
         # Adam优化器更新
         if self.pm is None:
@@ -299,10 +305,9 @@ class MaxEntIRL:
         self.theta += self.lr * update_vec
         
         # 计算指标
-        feature_diff = np.linalg.norm(gradient)
-        
+        feature_diff = np.linalg.norm(expert_features - selected_features)
+
         # 找到最优轨迹（概率最高的）
-        best_idx = np.argmax(probabilities)
         best_traj = candidate_trajectories[best_idx]
         position_diff = abs(expert_trajectory['x'][-1] - best_traj['x'][-1])
         
@@ -312,7 +317,7 @@ class MaxEntIRL:
         # 计算损失（负对数似然 + 正则化）
         loss = likelihood + self.lam * np.dot(self.theta, self.theta)
         
-        return feature_diff, position_diff, likelihood, loss
+        return feature_diff, position_diff, likelihood, loss, gradient_norm
 
     def train_improved(self, expert_trajectories, n_iterations=2000):
         """
@@ -367,16 +372,16 @@ class MaxEntIRL:
                 if len(candidate_trajectories) == 0:
                     continue
                 
-                f_diff, p_diff, likelihood, loss = self.train_step_improved(
+                f_diff, p_diff, likelihood, loss, grad_norm = self.train_step_improved(
                     expert_traj, candidate_trajectories
                 )
-                
+
                 if f_diff > 0:
                     total_feature_diff += f_diff
                     total_position_diff += p_diff
                     total_likelihood += likelihood
                     total_loss += loss
-                    total_gradient_norm += f_diff
+                    total_gradient_norm += grad_norm
                     valid_count += 1
 
             if valid_count > 0:
